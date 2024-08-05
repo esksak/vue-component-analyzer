@@ -1,10 +1,11 @@
 import {FileReport} from '../../types';
-import {resolveFile} from './utils';
-import {readFileSync, statSync} from 'fs';
+import { resolveFile, getImportDeclaration } from './utils';
+import { readFileSync, statSync, existsSync } from 'fs';
 import {resolve, extname} from 'path';
 import {fileCounter} from './FileCounter';
 import {VueComponent} from './VueComponent';
 import {model} from './Model';
+import {ESLintImportDeclaration} from 'vue-eslint-parser/ast/nodes';
 const cwd = process.cwd();
 
 /**
@@ -44,32 +45,48 @@ export const getImportDeclarationTree = (fileName: string, parents: string[] = [
 
   const contents = readFileSync(filename, 'utf-8');
   const component = new VueComponent(shortFilename, contents, stat);
-  const getNextDeclaration = (source: string) => {
-    const nextFilename = resolveFile(source, filename);
-
-    if (nextFilename) {
-      if (parents.includes(nextFilename)) {
-        console.warn(`Circular dependency detected between ${nextFilename} and ${filename}`);
-      } else {
-        component.addChildReport(getImportDeclarationTree(nextFilename, ancestorList, isTest));
-      }
+  const getNextDeclaration = (declaration: ESLintImportDeclaration) => {
+    const source = declaration.source.value;
+    const hasImportSpecifier = declaration.specifiers.some((spec) => 'imported' in spec);
+    let nextFilenames = [];
+    if (!hasImportSpecifier) {
+      nextFilenames.push(source);
+    } else {
+      declaration.specifiers
+        .filter((spec) => 'imported' in spec)
+        .map((spec) => spec.imported.name)
+        .forEach((name) => {
+          nextFilenames.push(name);
+        });
     }
+    nextFilenames.forEach((file) => {
+      let nextFilename = resolveFile(`${source}/${file}`, filename);
+      if (!existsSync(nextFilename)) {
+        nextFilename = resolveFile(source, filename);
+      }
+      if (existsSync(nextFilename)) {
+        if (parents.includes(nextFilename)) {
+          console.warn(`Circular dependency detected between ${nextFilename} and ${filename}`);
+        } else {
+          component.addChildReport(getImportDeclarationTree(nextFilename, ancestorList, isTest));
+        }
+      } else {
+          console.error(`File not found: ${nextFilename},  ${source}`);
+      }
+    });
   };
 
   try {
     // if we get, read imported file recursive.
     for (let i = 0, len = component.importDeclaration.length; i < len; i++) {
       // TODO: support other types? (value might be RegExp, or number, boolean.)
-      const source = String(component.importDeclaration[i].source.value);
-
-      if (source) {
-        getNextDeclaration(source);
-      }
+      getNextDeclaration(component.importDeclaration[i]);
     }
-
+    /*
     if (component.srcAttribute) {
       getNextDeclaration(component.srcAttribute);
     }
+    */
   } catch (err) {
     console.error(`Something went wrong with reading ${filename}`);
     if (err instanceof Error) {
